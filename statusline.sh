@@ -11,13 +11,39 @@ ICON_CLOCK=$(printf '\357\200\227')   # 時鐘圖示（Rate Limit）
 ICON_COST=$(printf '\357\205\225')    # 美元圖示（花費）
 
 # ── 讀取資料 ──
-model=$(echo "$input" | jq -r '.model.display_name // ""')
-ctx_remain=$(echo "$input" | jq -r '.context_window.remaining_percentage // empty')
-five_h_used=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-seven_d_used=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-five_h_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-seven_d_resets=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
-cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
+model=$(printf '%s' "$input" | jq -r '.model.display_name // ""')
+ctx_remain=$(printf '%s' "$input" | jq -r '.context_window.remaining_percentage // empty')
+five_h_used=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+seven_d_used=$(printf '%s' "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+five_h_resets=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
+seven_d_resets=$(printf '%s' "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+cost=$(printf '%s' "$input" | jq -r '.cost.total_cost_usd // empty')
+
+# ── date 方言偵測 ──
+# GNU date（Linux / Git Bash）用 -d @epoch，BSD date（macOS）用 -r epoch
+if date -d @0 +%Y >/dev/null 2>&1; then
+  DATE_STYLE=gnu
+else
+  DATE_STYLE=bsd
+fi
+
+# epoch 秒數 → 指定格式
+epoch_fmt() {
+  if [ "$DATE_STYLE" = gnu ]; then
+    date -d "@$1" +"$2" 2>/dev/null
+  else
+    date -r "$1" +"$2" 2>/dev/null
+  fi
+}
+
+# 明天的 YYYYMMDD
+tomorrow_ymd() {
+  if [ "$DATE_STYLE" = gnu ]; then
+    date -d "+1 day" +%Y%m%d 2>/dev/null
+  else
+    date -v+1d +%Y%m%d 2>/dev/null
+  fi
+}
 
 # ── 顏色函式：依剩餘百分比決定顏色 ──
 # 綠色 ≥50% │ 黃色 21-49% │ 紅色 ≤20%
@@ -42,8 +68,8 @@ reset_at_time() {
     printf '?'
     return
   fi
-  hour=$(date -r "$epoch" +%H 2>/dev/null)
-  min=$(date -r "$epoch" +%M 2>/dev/null)
+  hour=$(epoch_fmt "$epoch" %H)
+  min=$(epoch_fmt "$epoch" %M)
   if [ -z "$hour" ]; then
     printf '?'
     return
@@ -71,15 +97,15 @@ reset_at_time() {
 
   # 日期前綴：今天不加、明天加「明天」、更遠加星期
   today=$(date +%Y%m%d)
-  rday=$(date -r "$epoch" +%Y%m%d 2>/dev/null)
-  tomorrow=$(date -v+1d +%Y%m%d 2>/dev/null)
+  rday=$(epoch_fmt "$epoch" %Y%m%d)
+  tomorrow=$(tomorrow_ymd)
   prefix=""
   if [ "$rday" != "$today" ]; then
     if [ "$rday" = "$tomorrow" ]; then
       prefix="明天 "
     else
-      mon=$(date -r "$epoch" +%m 2>/dev/null); mon=${mon#0}
-      day=$(date -r "$epoch" +%d 2>/dev/null); day=${day#0}
+      mon=$(epoch_fmt "$epoch" %m); mon=${mon#0}
+      day=$(epoch_fmt "$epoch" %d); day=${day#0}
       prefix="${mon}/${day} "
     fi
   fi
@@ -102,13 +128,29 @@ mini_bar() {
 SEP=$(printf '\033[2m │ \033[0m')
 
 # ── 工作目錄（青色）──
-cwd=$(echo "$input" | jq -r '.cwd // ""')
-short_dir=$(echo "$cwd" | sed "s|^$HOME|~|")
+cwd=$(printf '%s' "$input" | jq -r '.cwd // ""')
+
+# 顯示用路徑：反斜線換成斜線（Windows 會給 C:\Users\...），家目錄縮成 ~
+# Git Bash 的 $HOME 是 /c/Users/xxx，但 cwd 是 C:\Users\xxx，兩種前綴都要比對
+disp=$(printf '%s' "$cwd" | tr '\\' '/')
+home_win=""
+if command -v cygpath >/dev/null 2>&1; then
+  home_win=$(cygpath -m "$HOME" 2>/dev/null)
+fi
+short_dir="$disp"
+for h in "$home_win" "$HOME"; do
+  [ -n "$h" ] || continue
+  case "$disp" in
+    "$h")   short_dir="~";            break ;;
+    "$h"/*) short_dir="~${disp#"$h"}"; break ;;
+  esac
+done
 parts=$(printf '\033[36m%s %s\033[0m' "$ICON_DIR" "$short_dir")
 
 # ── Git 分支（綠色）──
 git_branch=""
-if [ -d "$cwd/.git" ] || git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
+# cwd 為空時 git -C "" 會退回目前目錄，顯示不相干的分支，所以先擋掉
+if [ -n "$cwd" ] && { [ -d "$cwd/.git" ] || git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; }; then
   git_branch=$(git -C "$cwd" -c core.useBuiltinFSMonitor=false symbolic-ref --short HEAD 2>/dev/null)
 fi
 if [ -n "$git_branch" ]; then
