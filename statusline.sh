@@ -18,6 +18,11 @@ seven_d_used=$(printf '%s' "$input" | jq -r '.rate_limits.seven_day.used_percent
 five_h_resets=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 seven_d_resets=$(printf '%s' "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 cost=$(printf '%s' "$input" | jq -r '.cost.total_cost_usd // empty')
+# rate_limits 整包在 API key / Bedrock session 會是 null；
+# 而某個視窗剛重置、還沒送出請求時，該視窗會是 null（此時視為 0%，避免欄位忽隱忽現）
+rl_present=$(printf '%s' "$input" | jq -r 'if (.rate_limits|type) == "object" then "1" else "" end')
+[ -n "$rl_present" ] && [ -z "$five_h_used" ] && five_h_used=0
+[ -n "$rl_present" ] && [ -z "$seven_d_used" ] && seven_d_used=0
 
 # ── date 方言偵測 ──
 # GNU date（Linux / Git Bash）用 -d @epoch，BSD date（macOS）用 -r epoch
@@ -157,9 +162,19 @@ if [ -n "$git_branch" ]; then
   parts="$parts$SEP$(printf '\033[32m%s %s\033[0m' "$ICON_GIT" "$git_branch")"
 fi
 
+# ── 第二行從 Model 開始 ──
+parts2=""
+append2() {
+  if [ -n "$parts2" ]; then
+    parts2="$parts2$SEP$1"
+  else
+    parts2="$1"
+  fi
+}
+
 # ── Model（紫色粗體）──
 if [ -n "$model" ]; then
-  parts="$parts$SEP$(printf '\033[1;35m%s\033[0m' "$model")"
+  append2 "$(printf '\033[1;35m%s\033[0m' "$model")"
 fi
 
 # ── Context 剩餘（進度條 + 百分比）──
@@ -167,7 +182,7 @@ if [ -n "$ctx_remain" ]; then
   val=$(printf '%.0f' "$ctx_remain")
   color=$(color_by_remain "$val")
   bar=$(mini_bar "$val")
-  parts="$parts$SEP$(printf '%s%s %s %s%%\033[0m' "$color" "$ICON_CTX" "$bar" "$val")"
+  append2 "$(printf '%s%s %s %s%%\033[0m' "$color" "$ICON_CTX" "$bar" "$val")"
 fi
 
 # ── 5 小時 Rate Limit（已用 % + 距離重置倒數；沒有 resets_at 就只顯示 %）──
@@ -180,7 +195,7 @@ if [ -n "$five_h_used" ]; then
   else
     display="已用 ${used}%"
   fi
-  parts="$parts$SEP$(printf '%s%s 5h %s\033[0m' "$color" "$ICON_CLOCK" "$display")"
+  append2 "$(printf '%s%s 5h %s\033[0m' "$color" "$ICON_CLOCK" "$display")"
 fi
 
 # ── 7 天 Rate Limit（已用 % + 距離重置倒數；沒有 resets_at 就只顯示 %）──
@@ -193,12 +208,17 @@ if [ -n "$seven_d_used" ]; then
   else
     display="已用 ${used}%"
   fi
-  parts="$parts$SEP$(printf '%s%s 7d %s\033[0m' "$color" "$ICON_CLOCK" "$display")"
+  append2 "$(printf '%s%s 7d %s\033[0m' "$color" "$ICON_CLOCK" "$display")"
 fi
 
 # ── Session 花費（灰色，四捨五入到小數點兩位）──
 if [ -n "$cost" ] && [ "$cost" != "0" ] && [ "$cost" != "null" ]; then
-  parts="$parts$SEP$(printf '\033[2m%s $%.2f\033[0m' "$ICON_COST" "$cost")"
+  append2 "$(printf '\033[2m%s $%.2f\033[0m' "$ICON_COST" "$cost")"
 fi
 
-printf '%s' "$parts"
+# ── 輸出：第一行 目錄/分支，第二行 模型/用量 ──
+if [ -n "$parts2" ]; then
+  printf '%s\n%s' "$parts" "$parts2"
+else
+  printf '%s' "$parts"
+fi
